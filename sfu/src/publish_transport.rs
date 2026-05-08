@@ -392,6 +392,12 @@ impl PublishTransport {
             tracing::error!("failed to stop rtcp writer loop: {}", err);
         }
         self.peer_connection.close().await?;
+        let publishers = self.publishers.lock().await;
+        for (_id, p) in publishers.iter() {
+            p.lock().await.close().await;
+        }
+        self.publishers.lock().await.clear();
+
         Ok(())
     }
 }

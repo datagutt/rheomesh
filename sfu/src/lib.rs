@@ -31,9 +31,9 @@ mod replay_channel;
 pub mod router;
 /// RTP packet related module.
 pub mod rtp;
-/// Signaling related module for WHIP protocol.
-#[cfg(feature = "whip")]
-#[cfg_attr(docsrs, doc(cfg(feature = "whip")))]
+/// Signaling related module for WHIP and WHEP protocol.
+#[cfg(feature = "whip_whep")]
+#[cfg_attr(docsrs, doc(cfg(feature = "whip_whep")))]
 pub mod signaling;
 /// [`webrtc::peer_connection::RTCPeerConnection`] methods for subscriber.
 pub mod subscribe_transport;

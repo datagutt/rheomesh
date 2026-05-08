@@ -106,6 +106,11 @@ export class SubscribeTransport extends EventEmitter {
     return answer;
   }
 
+  public async setAnswer(answer: RTCSessionDescription): Promise<void> {
+    this._sdp = answer;
+    await this._peerConnection.setRemoteDescription(answer);
+  }
+
   public async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
     if (this._peerConnection.remoteDescription) {
       await this._peerConnection.addIceCandidate(
@@ -168,6 +173,15 @@ export class SubscribeTransport extends EventEmitter {
 
   public close() {
     this._peerConnection.close();
+  }
+
+  public async generateWHEP() {
+    this._peerConnection.addTransceiver("audio", { direction: "recvonly" });
+    this._peerConnection.addTransceiver("video", { direction: "recvonly" });
+
+    const offer = await this._peerConnection.createOffer();
+    this._peerConnection.setLocalDescription(offer);
+    return offer;
   }
 }
 

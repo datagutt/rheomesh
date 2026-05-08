@@ -115,7 +115,7 @@ where
     }
 
     /// PATCH /whip/session_id - For trickle ICE
-    async fn handle_tricle_ice(
+    async fn handle_trickle_ice(
         &self,
         session_id: web::Path<String>,
         req: HttpRequest,
@@ -253,7 +253,7 @@ where
         cfg.service(
             web::resource("/whip/{session_id}")
                 .route(web::post().to(Self::handle_offer_route))
-                .route(web::patch().to(Self::handle_tricle_ice_route))
+                .route(web::patch().to(Self::handle_trickle_ice_route))
                 .route(web::delete().to(Self::handle_delete_route)),
         )
         .app_data(endpoint);
@@ -271,14 +271,14 @@ where
             .map_err(|e| e.into())
     }
 
-    async fn handle_tricle_ice_route(
+    async fn handle_trickle_ice_route(
         endpoint: web::Data<Self>,
         session_id: web::Path<String>,
         req: HttpRequest,
         body: web::Bytes,
     ) -> Result<HttpResponse, actix_web::Error> {
         endpoint
-            .handle_tricle_ice(session_id, req, body)
+            .handle_trickle_ice(session_id, req, body)
             .await
             .map_err(|e| e.into())
     }
