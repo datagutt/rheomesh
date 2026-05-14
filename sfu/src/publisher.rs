@@ -261,7 +261,11 @@ impl Publisher {
                             );
                         }
                     }
+                    let _ = p
+                        .router_sender
+                        .send(RouterEvent::PublisherRemoved(p.track_id.clone()));
 
+                    (p.close_callback)(p.track_id.clone());
                     break;
                 }
             }
