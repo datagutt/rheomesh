@@ -15,7 +15,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-whip = ["dep:actix-web"]
+whip_whep = ["dep:actix-web"]
 
 [dependencies]
 bincode = { version = "2.0.1", features = ["serde"]}
@@ -57,4 +57,9 @@ tokio-util = "0.7"
 [[example]]
 name = "whip_server"
 path = "examples/whip_server.rs"
-required-features = ["whip"]
+required-features = ["whip_whep"]
+
+[[example]]
+name = "whip_whep"
+path = "examples/whip_whep.rs"
+required-features = ["whip_whep"]

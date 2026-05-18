@@ -24,15 +24,14 @@ export default function Room() {
     [publisherId: string]: MediaStream;
   }>({});
   const [subscriberIds, setSubscriberIds] = useState<Array<string>>([]);
-  const [connected, setConnected] = useState(false);
 
   const sendingVideoRef = useRef<HTMLVideoElement>(null);
-  const publishTransport = useRef<PublishTransport>(null);
+  const publishTransport = useRef<PublishTransport | null>(null);
+  const subscribeTransport = useRef<SubscribeTransport | null>(null);
+  const publishers = useRef<Array<string>>([]);
   const sessionId = useRef<string | null>(null);
   const etag = useRef<string | null>(null);
-
-  const ws = useRef<WebSocket | null>(null);
-  const subscribeTransport = useRef<SubscribeTransport | null>(null);
+  const subscribeCandidate = useRef<Array<RTCIceCandidate>>([]);
 
   useEffect(() => {
     if (router.query.room) {
@@ -47,7 +46,9 @@ export default function Room() {
         if (response.ok) {
           const json = await response.json();
           sessionId.current = json.session_id;
+          publishers.current = json.publisher_ids;
           startPublishPeer();
+          startSubscribePeer();
         }
       })();
     }
@@ -99,7 +100,6 @@ export default function Room() {
     if (sendingVideoRef.current) {
       sendingVideoRef.current.srcObject = stream;
     }
-
     await publish(stream);
     setLocalVideo(stream);
   };
@@ -129,112 +129,103 @@ export default function Room() {
     });
   };
 
-  /** subscriber with WebSocket **/
-  const connect = () => {
-    close();
-    ws.current = new WebSocket(
-      `ws://localhost:${process.env.NEXT_PUBLIC_SERVER_PORT || "4000"}/socket?room=${room}`,
-    );
-    ws.current.onopen = () => {
-      console.debug("Connected websocket server");
-      startSubscribePeer();
-      setConnected(true);
-    };
-    ws.current.onclose = () => {
-      console.debug("Disconnected from websocket server");
-      setConnected(false);
-    };
-    ws.current.onerror = (e) => {
-      console.error(e);
-    };
-    ws.current.onmessage = messageHandler;
-    setInterval(() => {
-      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({ action: "Ping" }));
-      }
-    }, 5000);
-  };
-
-  const close = () => {
-    subscriberIds.forEach((id) => {
-      ws.current!.send(
-        JSON.stringify({
-          action: "StopSubscribe",
-          subscriberId: id,
-        }),
-      );
+  const closePublish = async () => {
+    localVideo?.getTracks().forEach((track) => {
+      track.stop();
     });
-    setSubscriberIds([]);
-    subscribeTransport.current?.close();
-    ws.current?.close();
-    ws.current = null;
-    setConnected(false);
+    setLocalVideo(null);
+    publishTransport.current?.close();
+    publishTransport.current = null;
+    await fetch(`${host}/whip/${sessionId.current}`, {
+      method: "DELETE",
+    });
   };
 
+  /** subscriber with WHEP **/
   const startSubscribePeer = () => {
     if (!subscribeTransport.current) {
       subscribeTransport.current = new SubscribeTransport(peerConnectionConfig);
-      ws.current!.send(JSON.stringify({ action: "SubscriberInit" }));
-      subscribeTransport.current.on("icecandidate", (candidate) => {
-        ws.current!.send(
-          JSON.stringify({
-            action: "SubscriberIce",
-            candidate: candidate,
-          }),
-        );
-      });
+      subscribeTransport.current.on(
+        "icecandidate",
+        (candidate: RTCIceCandidate) => {
+          subscribeCandidate.current.push(candidate);
+        },
+      );
     }
   };
 
-  const messageHandler = (event: MessageEvent) => {
-    console.debug("Received message: ", event.data);
-    const message = JSON.parse(event.data);
-    switch (message.action) {
-      case "Offer":
-        subscribeTransport.current!.setOffer(message.sdp).then((answer) => {
-          ws.current!.send(JSON.stringify({ action: "Answer", sdp: answer }));
-        });
-        break;
-      case "SubscriberIce":
-        subscribeTransport.current!.addIceCandidate(message.candidate);
-        break;
-      case "Published":
-        message.publisherIds.forEach((publisherId: string) => {
-          ws.current!.send(
-            JSON.stringify({
-              action: "Subscribe",
-              publisherId: publisherId,
-            }),
-          );
-          subscribeTransport
-            .current!.subscribe(publisherId)
-            .then((subscriber) => {
-              const stream = new MediaStream([subscriber.track]);
-              if (subscriber.track.kind === "audio") {
-                setRecevingAudio((prev) => ({
-                  ...prev,
-                  [publisherId]: stream,
-                }));
-              } else {
-                setRecevingVideo((prev) => ({
-                  ...prev,
-                  [publisherId]: stream,
-                }));
-              }
-            });
-        });
+  const subscribe = async () => {
+    publishers.current.forEach(async (id) => {
+      await trySubscribe(id);
+    });
+  };
 
-        break;
-      case "Subscribed":
-        setSubscriberIds((prev) => [...prev, message.subscriberId]);
-        break;
-      case "Pong":
-        console.debug("pong");
-        break;
-      default:
-        console.error("Unknown message type: ", message);
-        break;
+  const trySubscribe = async (publisherId: string) => {
+    if (!subscribeTransport.current) return;
+    const empty = await subscribeTransport.current.generateWHEP();
+    const response = await fetch(
+      `${host}/whep/${sessionId.current}/${publisherId}`,
+      {
+        method: "POST",
+        body: empty.sdp,
+        headers: { "Content-Type": "application/sdp" },
+      },
+    );
+    if (!response.ok) {
+      console.error("Failed to subscribe:", response.statusText);
+      return;
     }
+    etag.current = response.headers.get("Etag");
+    console.debug("Received Etag: ", etag.current);
+    console.debug("WHEP response: ", response);
+    const sdp = new RTCSessionDescription({
+      type: "answer",
+      sdp: await response.text(),
+    });
+    await subscribeTransport.current!.setAnswer(sdp);
+    while (subscribeCandidate.current.length > 0) {
+      const candidate = subscribeCandidate.current.shift();
+      if (candidate && sessionId.current && etag.current) {
+        const fragment = rfc8840Candidate(candidate);
+        fetch(`${host}/whep/${sessionId.current}`, {
+          method: "PATCH",
+          body: fragment,
+          headers: {
+            "Content-Type": "application/trickle-ice-sdpfrag",
+            "If-Match": etag.current!,
+          },
+        }).then((response) => {
+          if (response.ok && response.status === 204) {
+            console.debug("ICE candidate sent successfully");
+          } else if (response.ok) {
+            console.warn("Unexpected response status:", response.status);
+          } else {
+            console.error("Failed to send ICE candidate:", response.statusText);
+          }
+        });
+      }
+    }
+    const subscriber = await subscribeTransport.current!.subscribe(publisherId);
+    const stream = new MediaStream([subscriber.track]);
+    if (subscriber.track.kind === "audio") {
+      setRecevingAudio((prev) => ({
+        ...prev,
+        [publisherId]: stream,
+      }));
+    } else {
+      setRecevingVideo((prev) => ({
+        ...prev,
+        [publisherId]: stream,
+      }));
+    }
+  };
+
+  const closeSubscribe = async () => {
+    subscribeTransport.current?.close();
+    subscribeTransport.current = null;
+    await fetch(`${host}/whep/${sessionId.current}`, {
+      method: "DELETE",
+    });
   };
 
   return (
@@ -243,6 +234,9 @@ export default function Room() {
       <div>
         <button id="capture" onClick={capture} disabled={localVideo !== null}>
           Capture
+        </button>
+        <button id="close_publish" onClick={closePublish}>
+          Close publish
         </button>
       </div>
       <h3>Sending Video</h3>
@@ -254,8 +248,11 @@ export default function Room() {
         width={480}
       ></video>
       <h3>Receving</h3>
-      <button id="connect" onClick={connect} disabled={connected}>
-        Connect
+      <button id="subscribe" onClick={subscribe}>
+        Subscribe
+      </button>
+      <button id="close_subscribe" onClick={closeSubscribe}>
+        Close subscribe
       </button>
       {Object.keys(recevingVideo).map((key) => (
         <div key={key}>

@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, sync::Arc};
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 #[derive(Debug)]
 pub(crate) struct ReplayChannel<T> {
@@ -37,5 +37,9 @@ impl<T: Clone + Send + 'static> ReplayChannel<T> {
     pub async fn subscribe(&self) -> Vec<T> {
         let history = self.history.lock().await;
         history.iter().cloned().collect()
+    }
+
+    pub async fn clear(&self) {
+        self.history.lock().await.clear();
     }
 }

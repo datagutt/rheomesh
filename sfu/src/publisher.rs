@@ -2,9 +2,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use derivative::Derivative;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use webrtc::{
-    rtp_transceiver::{rtp_receiver::RTCRtpReceiver, RTCRtpTransceiver},
+    rtp_transceiver::{RTCRtpTransceiver, rtp_receiver::RTCRtpReceiver},
     track::track_remote::TrackRemote,
 };
 
@@ -261,7 +261,11 @@ impl Publisher {
                             );
                         }
                     }
+                    let _ = p
+                        .router_sender
+                        .send(RouterEvent::PublisherRemoved(p.track_id.clone()));
 
+                    (p.close_callback)(p.track_id.clone());
                     break;
                 }
             }

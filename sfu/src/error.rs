@@ -32,6 +32,8 @@ pub enum Error {
     RecordingError(#[from] RecordingError),
     #[error(transparent)]
     WhipSdpError(#[from] WhipSdpError),
+    #[error(transparent)]
+    WhepSdpError(#[from] WhepSdpError),
 }
 
 #[derive(thiserror::Error)]
@@ -80,6 +82,13 @@ pub struct RecordingError {
 #[error("{kind}: {message}")]
 pub struct WhipSdpError {
     pub kind: WhipSdpErrorKind,
+    pub message: String,
+}
+
+#[derive(thiserror::Error)]
+#[error("{kind}: {message}")]
+pub struct WhepSdpError {
+    pub kind: WhepSdpErrorKind,
     pub message: String,
 }
 
@@ -161,6 +170,14 @@ pub enum WhipSdpErrorKind {
     IceInformationMissingError,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum WhepSdpErrorKind {
+    #[error("invalid content type error")]
+    InvalidContentTypeError,
+    #[error("invalid sdp offer error")]
+    InvalidSdpOfferError,
+}
+
 impl Error {
     pub fn new_transport(message: String, kind: TransportErrorKind) -> Error {
         Error::TransportError(TransportError { kind, message })
@@ -188,6 +205,10 @@ impl Error {
 
     pub fn new_whip_sdp(message: String, kind: WhipSdpErrorKind) -> Error {
         Error::WhipSdpError(WhipSdpError { kind, message })
+    }
+
+    pub fn new_whep_sdp(message: String, kind: WhepSdpErrorKind) -> Error {
+        Error::WhepSdpError(WhepSdpError { kind, message })
     }
 }
 
@@ -268,7 +289,18 @@ impl fmt::Debug for WhipSdpError {
     }
 }
 
-#[cfg(feature = "whip")]
+impl fmt::Debug for WhepSdpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut builder = f.debug_struct("rheomesh::WhepSdpError");
+
+        builder.field("kind", &self.kind);
+        builder.field("message", &self.message);
+
+        builder.finish()
+    }
+}
+
+#[cfg(feature = "whip_whep")]
 impl From<Error> for actix_web::Error {
     fn from(err: Error) -> actix_web::Error {
         match err {
@@ -287,6 +319,12 @@ impl From<Error> for actix_web::Error {
                 }
                 WhipSdpErrorKind::EtagMismatchError => actix_web::error::ErrorPreconditionFailed(e),
                 WhipSdpErrorKind::InvalidContentTypeError => {
+                    actix_web::error::ErrorNotAcceptable(e)
+                }
+                _ => actix_web::error::ErrorBadRequest(e),
+            },
+            Error::WhepSdpError(e) => match e.kind {
+                WhepSdpErrorKind::InvalidContentTypeError => {
                     actix_web::error::ErrorNotAcceptable(e)
                 }
                 _ => actix_web::error::ErrorBadRequest(e),

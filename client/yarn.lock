@@ -5642,6 +5642,21 @@ __metadata:
   languageName: node
   linkType: hard
 
+"whep@workspace:example/whep":
+  version: 0.0.0-use.local
+  resolution: "whep@workspace:example/whep"
+  dependencies:
+    "@types/node": "npm:^24.0.0"
+    "@types/react": "npm:^19.0.0"
+    "@types/react-dom": "npm:^19.0.0"
+    next: "npm:16.1.7"
+    react: "npm:^19.0.0"
+    react-dom: "npm:^19.0.0"
+    rheomesh: "npm:*"
+    typescript: "npm:^5"
+  languageName: unknown
+  linkType: soft
+
 "which@npm:^2.0.1":
   version: 2.0.2
   resolution: "which@npm:2.0.2"

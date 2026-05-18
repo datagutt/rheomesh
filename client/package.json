@@ -6,7 +6,8 @@
     "example/data",
     "example/multiple",
     "example/camera",
-    "example/whip"
+    "example/whip",
+    "example/whep"
   ],
   "engines": {
     "npm": "use yarn instead"

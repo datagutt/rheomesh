@@ -51,7 +51,7 @@ pub struct SubscribeTransport {
     pub id: String,
     peer_connection: Arc<RTCPeerConnection>,
     pending_candidates: Arc<Mutex<Vec<RTCIceCandidateInit>>>,
-    router_event_sender: mpsc::UnboundedSender<RouterEvent>,
+    pub(crate) router_event_sender: mpsc::UnboundedSender<RouterEvent>,
     offer_options: RTCOfferOptions,
     // For callback fn
     #[derivative(Debug = "ignore")]
@@ -235,7 +235,33 @@ impl SubscribeTransport {
         Ok(())
     }
 
-    async fn subscribe_track(
+    /// Set an empty offer and get a corresponding SDP answer.
+    pub async fn get_answer(
+        &self,
+        offer: RTCSessionDescription,
+    ) -> Result<RTCSessionDescription, Error> {
+        tracing::debug!("subscriber set offer");
+        self.peer_connection.set_remote_description(offer).await?;
+
+        let answer = self.peer_connection.create_answer(None).await?;
+
+        let mut gathering_complete = self.peer_connection.gathering_complete_promise().await;
+        self.peer_connection.set_local_description(answer).await?;
+        let _ = gathering_complete.recv().await;
+
+        match self.peer_connection.local_description().await {
+            Some(answer) => {
+                let answer = Self::adjust_extmap(answer)?;
+                Ok(answer)
+            }
+            None => Err(Error::new_transport(
+                "Failed to set local description".to_string(),
+                TransportErrorKind::LocalDescriptionError,
+            )),
+        }
+    }
+
+    pub async fn subscribe_track(
         &self,
         publisher_id: String,
         local_track: Arc<dyn Track>,
@@ -394,20 +420,36 @@ impl SubscribeTransport {
                     let locked = on_negotiation_needed.lock().await;
                     if let Some(pc) = downgraded_peer.upgrade() {
                         if pc.connection_state() == RTCPeerConnectionState::Closed {
-                                return;
+                            tracing::info!("Skip negotiation because connection state is closed");
+                            return;
+                        }
+                        if pc.signaling_state() != RTCSignalingState::Stable {
+                            tracing::info!("Skip negotiation because signaling state is {}", pc.signaling_state());
+                            return;
                         }
                         signaling_pending.store(true, Ordering::Relaxed);
-                        let offer = pc.create_offer(Some(offer_options)).await.expect("could not create subscriber offer:");
-                        let offer = Self::adjust_extmap(offer).expect("could not adjust sdp");
+                        match pc.create_offer(Some(offer_options)).await {
+                            Ok(offer) => {
+                                let offer = Self::adjust_extmap(offer).expect("could not adjust sdp");
 
-                        let mut gathering_complete = pc.gathering_complete_promise().await;
-                        pc.set_local_description(offer).await.expect("could not set local description");
-                        let _ = gathering_complete.recv().await;
+                                let mut gathering_complete = pc.gathering_complete_promise().await;
+                                if let Err(err) = pc.set_local_description(offer).await {
+                                    tracing::error!("Failed to set local description: {}", err);
+                                    return;
+                                }
+                                let _ = gathering_complete.recv().await;
 
-                        let offer = pc.local_description().await.unwrap();
+                                let offer = pc.local_description().await.unwrap();
 
-                        tracing::info!("peer sending offer");
-                        (locked)(offer);
+                                tracing::info!("peer sending offer");
+                                (locked)(offer);
+                            }
+                            Err(err) => {
+                                tracing::error!("Could not create offer: {}", err);
+                                return;
+                            }
+                        }
+
                     }
                 }))
             })));

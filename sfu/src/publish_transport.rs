@@ -372,6 +372,17 @@ impl PublishTransport {
 
             Box::pin(async {})
         })));
+
+        let publishers = self.publishers.clone();
+        let published_channel = self.published_channel.clone();
+        let published_receiver = self.published_receiver.clone();
+        peer.on_peer_connection_state_change(Box::new(enc!((publishers, published_channel, published_receiver) move |state| {
+            Box::pin(enc!((publishers, published_channel, published_receiver) async move {
+                if state == RTCPeerConnectionState::Closed || state == RTCPeerConnectionState::Failed {
+                    Self::cleanup(publishers, published_channel, published_receiver).await;
+                }
+            }))
+        })));
     }
 
     // Hooks
@@ -387,11 +398,41 @@ impl PublishTransport {
         *callback = f;
     }
 
+    async fn cleanup(
+        publishers: Arc<Mutex<HashMap<String, Arc<Mutex<Publisher>>>>>,
+        published_channel: Arc<replay_channel::ReplayChannel<Arc<Mutex<Publisher>>>>,
+        published_receiver: Arc<Mutex<mpsc::Receiver<Arc<Mutex<Publisher>>>>>,
+    ) {
+        let mut p = publishers.lock().await;
+        let drained: Vec<_> = p.drain().collect();
+        drop(p);
+        for (id, publisher) in drained {
+            tracing::debug!("Publisher {} is closing", id);
+            publisher.lock().await.close().await;
+        }
+        tracing::debug!("Publishers are cleared");
+
+        published_channel.clear().await;
+
+        {
+            let mut rx = published_receiver.lock().await;
+            rx.close();
+            while rx.try_recv().is_ok() {}
+        }
+    }
+
     pub async fn close(&self) -> Result<(), Error> {
         if let Err(err) = self.stop_sender_channel.lock().await.send(()) {
             tracing::error!("failed to stop rtcp writer loop: {}", err);
         }
         self.peer_connection.close().await?;
+        Self::cleanup(
+            self.publishers.clone(),
+            self.published_channel.clone(),
+            self.published_receiver.clone(),
+        )
+        .await;
+
         Ok(())
     }
 }
