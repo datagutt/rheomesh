@@ -281,6 +281,7 @@ impl SubscribeTransport {
             .await?;
         let media_ssrc = local_track.ssrc();
         let rtp_sender = local_track.rtp_packet_sender();
+        let closed_receiver = self.closed_receiver.clone();
 
         let (subscriber, event_sender) = Subscriber::new(
             publisher_id.clone(),
@@ -291,6 +292,7 @@ impl SubscribeTransport {
             mime_type,
             media_ssrc,
             self.router_event_sender.clone(),
+            closed_receiver,
         );
 
         {
@@ -459,6 +461,15 @@ impl SubscribeTransport {
                 tracing::debug!("ICE gathering state changed: {}", state);
             })
         }));
+
+        let closed_sender = self.closed_sender.clone();
+        peer.on_peer_connection_state_change(Box::new(enc!((closed_sender) move |state| {
+            Box::pin(enc!((closed_sender) async move {
+                if state == RTCPeerConnectionState::Closed || state == RTCPeerConnectionState::Failed {
+                    Self::cleanup(closed_sender);
+                }
+            }))
+        })));
     }
 
     // Hooks
@@ -474,8 +485,12 @@ impl SubscribeTransport {
         *callback = f;
     }
 
+    fn cleanup(closed_sender: watch::Sender<bool>) {
+        let _ = closed_sender.send(true);
+    }
+
     pub async fn close(&self) -> Result<(), Error> {
-        self.closed_sender.send(true).unwrap();
+        Self::cleanup(self.closed_sender.clone());
 
         self.peer_connection.close().await?;
         Ok(())
