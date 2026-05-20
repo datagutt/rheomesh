@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use enclose::enc;
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use uuid::Uuid;
 use webrtc::{
     rtcp::{
@@ -45,6 +45,7 @@ pub struct Subscriber {
     media_ssrc: u32,
     spatial_layer: Arc<AtomicU8>,
     temporal_layer: Arc<AtomicU8>,
+    transport_closed: watch::Receiver<bool>,
 }
 
 impl Subscriber {
@@ -57,6 +58,7 @@ impl Subscriber {
         _mime_type: String,
         media_ssrc: u32,
         router_event_sender: mpsc::UnboundedSender<RouterEvent>,
+        transport_closed: watch::Receiver<bool>,
     ) -> (Arc<Mutex<Self>>, mpsc::UnboundedSender<SubscriberEvent>) {
         let id = Uuid::new_v4().to_string();
         let (tx, _rx) = broadcast::channel::<bool>(1);
@@ -70,7 +72,7 @@ impl Subscriber {
         let temporal_layer = Arc::new(AtomicU8::new(2));
 
         tokio::spawn(
-            enc!((id, media_ssrc, track_local, rtp_sender, replaced_sender, publisher_rtcp_sender, rtp_lock, sequence, timestamp, spatial_layer, temporal_layer) async move {
+            enc!((id, media_ssrc, track_local, rtp_sender, replaced_sender, publisher_rtcp_sender, rtp_lock, sequence, timestamp, spatial_layer, temporal_layer, transport_closed) async move {
                 Self::rtp_event_loop(
                     id,
                     media_ssrc,
@@ -83,6 +85,7 @@ impl Subscriber {
                     timestamp,
                     spatial_layer,
                     temporal_layer,
+                    transport_closed,
                 )
                 .await;
             }),
@@ -92,8 +95,8 @@ impl Subscriber {
         let (event_sender, event_receiver) = mpsc::unbounded_channel::<SubscriberEvent>();
 
         tokio::spawn(
-            enc!((rtcp_sender, publisher_rtcp_sender, id, media_ssrc, replaced_sender, rtcp_lock, event_sender) async move {
-                Self::rtcp_event_loop(id, media_ssrc, rtcp_sender, publisher_rtcp_sender, replaced_sender, rtcp_lock, event_sender).await;
+            enc!((rtcp_sender, publisher_rtcp_sender, id, media_ssrc, replaced_sender, rtcp_lock, event_sender, transport_closed) async move {
+                Self::rtcp_event_loop(id, media_ssrc, rtcp_sender, publisher_rtcp_sender, replaced_sender, rtcp_lock, event_sender, transport_closed).await;
             }),
         );
 
@@ -120,10 +123,11 @@ impl Subscriber {
             media_ssrc,
             spatial_layer,
             temporal_layer,
+            transport_closed: transport_closed.clone(),
         }));
 
-        tokio::spawn(enc!((id, subscriber, tx) async move {
-            Self::subscriber_event_loop(id, subscriber, event_receiver, tx).await;
+        tokio::spawn(enc!((id, subscriber, tx, transport_closed) async move {
+            Self::subscriber_event_loop(id, subscriber, event_receiver, tx, transport_closed).await;
         }));
 
         (subscriber, event_sender)
@@ -224,6 +228,7 @@ impl Subscriber {
             let timestamp = self.timestamp.clone();
             let spatial_layer = self.spatial_layer.clone();
             let temporal_layer = self.temporal_layer.clone();
+            let transport_closed = self.transport_closed.clone();
             tokio::spawn(async move {
                 Self::rtp_event_loop(
                     id,
@@ -237,6 +242,7 @@ impl Subscriber {
                     timestamp,
                     spatial_layer,
                     temporal_layer,
+                    transport_closed,
                 )
                 .await;
             });
@@ -249,6 +255,7 @@ impl Subscriber {
             let publisher_rtcp_sender = self.publisher_rtcp_sender.clone();
             let loop_lock = self.rtcp_lock.clone();
             let event_sender = self.subscriber_event_sender.clone();
+            let transport_closed = self.transport_closed.clone();
             tokio::spawn(async move {
                 Self::rtcp_event_loop(
                     id,
@@ -258,6 +265,7 @@ impl Subscriber {
                     replaced_sender,
                     loop_lock,
                     event_sender,
+                    transport_closed,
                 )
                 .await;
             });
@@ -282,6 +290,7 @@ impl Subscriber {
         init_timestamp: Arc<AtomicU32>,
         spatial_layer: Arc<AtomicU8>,
         temporal_layer: Arc<AtomicU8>,
+        mut transport_closed: watch::Receiver<bool>,
     ) {
         let mut _gurad = loop_lock.lock().await;
 
@@ -304,6 +313,13 @@ impl Subscriber {
             tokio::select! {
                 _ = track_replaced.recv() => {
                     break;
+                }
+                _ = transport_closed.changed() => {
+                    let closed = transport_closed.borrow();
+                    if *closed {
+                        tracing::debug!("Transport is closed, exiting event loop for {}", id);
+                        break;
+                    }
                 }
                 res = rtp_receiver.recv() => {
                     if publisher_rtcp_sender.is_closed() {
@@ -384,6 +400,7 @@ impl Subscriber {
         replaced_sender: broadcast::Sender<bool>,
         loop_lock: Arc<Mutex<bool>>,
         event_sender: mpsc::UnboundedSender<SubscriberEvent>,
+        mut transport_closed: watch::Receiver<bool>,
     ) {
         let mut _guard = loop_lock.lock().await;
 
@@ -399,6 +416,13 @@ impl Subscriber {
             tokio::select! {
                 _ = track_replaced.recv() => {
                     break;
+                }
+                _ = transport_closed.changed() => {
+                    let closed = transport_closed.borrow();
+                    if *closed {
+                        tracing::debug!("Transport is closed, exiting event loop for {}", id);
+                        break;
+                    }
                 }
                 res = rtcp_sender.read_rtcp() => {
                     if publisher_rtcp_sender.is_closed() {
@@ -470,6 +494,7 @@ impl Subscriber {
         subscriber: Arc<Mutex<Subscriber>>,
         mut event_receiver: mpsc::UnboundedReceiver<SubscriberEvent>,
         subscriber_closed_sender: broadcast::Sender<bool>,
+        mut transport_closed: watch::Receiver<bool>,
     ) {
         let mut subscriber_closed = subscriber_closed_sender.subscribe();
 
@@ -477,6 +502,14 @@ impl Subscriber {
             tokio::select! {
                 _ = subscriber_closed.recv() => {
                     break;
+                }
+                _ = transport_closed.changed() => {
+                    let closed = transport_closed.borrow();
+                    if *closed {
+                        tracing::debug!("Transport is closed, exiting event loop for {}", id);
+                        subscriber_closed_sender.send(true).unwrap();
+                        break;
+                    }
                 }
                 Some(event) = event_receiver.recv() => {
                     match event {
