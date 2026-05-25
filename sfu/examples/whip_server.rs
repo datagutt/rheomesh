@@ -4,6 +4,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use actix::{Actor, Addr, AsyncContext, Context, Handler, Message, StreamHandler};
 use actix_cors::Cors;
+use actix_web::http::header;
 use actix_web::{
     self, App, HttpRequest, HttpResponse, HttpServer, Responder, Result,
     web::{self, Data, Query},
@@ -84,8 +85,16 @@ async fn main() -> std::io::Result<()> {
     let endpoint = WhipEndpoint::new(store);
 
     HttpServer::new(move || {
-        // For local development, do not use for production.
-        let cors = Cors::permissive();
+        let cors = Cors::default()
+            .allowed_origin("http://localhost:3000")
+            .allowed_methods(vec!["GET", "POST", "PATCH", "DELETE", "OPTION"])
+            .allowed_headers(vec![
+                header::AUTHORIZATION,
+                header::ACCEPT,
+                header::CONTENT_TYPE,
+                header::IF_MATCH,
+            ])
+            .expose_headers(vec![header::LINK, header::LOCATION, header::ETAG]);
         App::new()
             .wrap(TracingLogger::default())
             .wrap(cors)
