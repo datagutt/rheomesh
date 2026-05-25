@@ -17,7 +17,7 @@ Rheomesh is a WebRTC SFU ([Selective Forwarding Unit](https://bloggeek.me/webrtc
 - [x] Relay
 - [x] Recording
 - [x] WebRTC-HTTP Ingestion Protocol ([WHIP](https://www.ietf.org/archive/id/draft-ietf-wish-whip-09.html))
-- [ ] WebRTC-HTTP Egress Protocol ([WHEP](https://www.ietf.org/archive/id/draft-murillo-whep-03.html))
+- [x] WebRTC-HTTP Egress Protocol ([WHEP](https://www.ietf.org/archive/id/draft-murillo-whep-03.html))
 
 # Document
 Please check https://h3poteto.github.io/rheomesh/
