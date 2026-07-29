@@ -250,10 +250,8 @@ impl SubscribeTransport {
         let _ = gathering_complete.recv().await;
 
         match self.peer_connection.local_description().await {
-            Some(answer) => {
-                let answer = Self::adjust_extmap(answer)?;
-                Ok(answer)
-            }
+            // Deliberately not adjust_extmap'd: see the note on that function.
+            Some(answer) => Ok(answer),
             None => Err(Error::new_transport(
                 "Failed to set local description".to_string(),
                 TransportErrorKind::LocalDescriptionError,
@@ -267,6 +265,7 @@ impl SubscribeTransport {
         local_track: Arc<dyn Track>,
     ) -> Result<Arc<Mutex<Subscriber>>, Error> {
         let publisher_rtcp_sender = local_track.rtcp_sender().clone();
+        let publisher_receiver = local_track.rtp_receiver();
         let mime_type = local_track.mime_type();
 
         let local_track_rtp = Arc::new(TrackLocalStaticRTP::new(
@@ -289,6 +288,7 @@ impl SubscribeTransport {
             rtp_sender,
             rtcp_sender,
             publisher_rtcp_sender,
+            publisher_receiver,
             mime_type,
             media_ssrc,
             self.router_event_sender.clone(),
@@ -496,6 +496,15 @@ impl SubscribeTransport {
         Ok(())
     }
 
+    /// Renumbers extensions to this router's canonical order.
+    ///
+    /// **Offers only.** An offerer is free to choose its own extension ids, but
+    /// an answerer is not: an answer may accept or omit what the offer proposed
+    /// and may never rebind an id to a different URI. Browsers enforce that and
+    /// reject the whole description ("RTP extension ID reassignment not
+    /// supported"), so `get_answer` must leave the negotiated ids alone.
+    /// Divergence between a publisher's ids and a subscriber's is reconciled on
+    /// the forwarding path instead, by [`crate::rtp::extmap::ExtensionTranslator`].
     fn adjust_extmap(mut sdp: RTCSessionDescription) -> Result<RTCSessionDescription, Error> {
         let mut session = parse_sdp(&sdp.sdp, false)?;
 
@@ -511,21 +520,10 @@ impl SubscribeTransport {
             }
             media.remove_attribute(SdpAttributeType::Extmap);
             for attr in found_attr {
-                // Keep the id the *offer* bound this extension to. Rewriting it
-                // to a canonical order produces an answer that rebinds an id the
-                // offerer already assigned to something else, which browsers
-                // reject outright rather than tolerate:
-                //
-                //   RTP extension ID reassignment not supported (collision on
-                //   active MID 0, id=3, old_uri="urn:3gpp:video-orientation",
-                //   new_uri="...transport-wide-cc-extensions-01")
-                //
-                // An answer may only accept or omit what the offer proposed; it
-                // may not renumber it. Unknown extensions are still dropped by
-                // the filter below, which is the part that was actually doing
-                // useful work here.
-                if find_extmap_order(&attr.url).is_some() {
-                    let _ = media.add_attribute(SdpAttribute::Extmap(attr))?;
+                if let Some(order) = find_extmap_order(&attr.url) {
+                    let mut new_attr = attr.clone();
+                    new_attr.id = order;
+                    let _ = media.add_attribute(SdpAttribute::Extmap(new_attr))?;
                 };
             }
         }

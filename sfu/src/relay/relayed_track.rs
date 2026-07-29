@@ -53,6 +53,10 @@ impl Track for RelayedTrack {
         self.rtcp_sender.clone()
     }
 
+    fn rtp_receiver(&self) -> Option<std::sync::Arc<webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver>> {
+        None
+    }
+
     fn rtp_packet_sender(&self) -> broadcast::Sender<(rtp::packet::Packet, Layer)> {
         self.rtp_packet_sender.clone()
     }

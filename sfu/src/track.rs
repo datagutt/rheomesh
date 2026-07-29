@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
+use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
 use webrtc::{rtp, rtp_transceiver::PayloadType};
 
 use crate::{rtp::layer::Layer, transport};
@@ -9,6 +10,10 @@ use crate::{rtp::layer::Layer, transport};
 /// Track represent media track that can be subscribed.
 pub trait Track {
     fn rtcp_sender(&self) -> Arc<transport::RtcpSender>;
+    /// The receiver this track arrives on, when it is published to this
+    /// server. `None` for relayed tracks, whose originating peer connection
+    /// lives elsewhere and whose negotiated extension ids are not visible.
+    fn rtp_receiver(&self) -> Option<Arc<RTCRtpReceiver>>;
     fn rtp_packet_sender(&self) -> broadcast::Sender<(rtp::packet::Packet, Layer)>;
     fn mime_type(&self) -> String;
     fn payload_type(&self) -> PayloadType;

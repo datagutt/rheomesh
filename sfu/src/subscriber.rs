@@ -13,7 +13,7 @@ use webrtc::{
         payload_feedbacks::picture_loss_indication::PictureLossIndication,
     },
     rtp,
-    rtp_transceiver::rtp_sender::RTCRtpSender,
+    rtp_transceiver::{rtp_receiver::RTCRtpReceiver, rtp_sender::RTCRtpSender},
     track::track_local::{TrackLocalWriter, track_local_static_rtp::TrackLocalStaticRTP},
 };
 
@@ -22,7 +22,7 @@ use crate::{
     error::Error,
     publisher::PublisherType,
     router::{Router, RouterEvent},
-    rtp::layer::Layer,
+    rtp::{extmap::ExtensionTranslator, layer::Layer},
     track::Track,
     transport,
 };
@@ -37,6 +37,7 @@ pub struct Subscriber {
     subscriber_event_sender: mpsc::UnboundedSender<SubscriberEvent>,
     track_local: Arc<TrackLocalStaticRTP>,
     publisher_rtcp_sender: Arc<transport::RtcpSender>,
+    publisher_receiver: Option<Arc<RTCRtpReceiver>>,
     rtcp_sender: Arc<RTCRtpSender>,
     sequence: Arc<AtomicU16>,
     timestamp: Arc<AtomicU32>,
@@ -55,6 +56,7 @@ impl Subscriber {
         rtp_sender: broadcast::Sender<(rtp::packet::Packet, Layer)>,
         rtcp_sender: Arc<RTCRtpSender>,
         publisher_rtcp_sender: Arc<transport::RtcpSender>,
+        publisher_receiver: Option<Arc<RTCRtpReceiver>>,
         _mime_type: String,
         media_ssrc: u32,
         router_event_sender: mpsc::UnboundedSender<RouterEvent>,
@@ -72,7 +74,7 @@ impl Subscriber {
         let temporal_layer = Arc::new(AtomicU8::new(2));
 
         tokio::spawn(
-            enc!((id, media_ssrc, track_local, rtp_sender, replaced_sender, publisher_rtcp_sender, rtp_lock, sequence, timestamp, spatial_layer, temporal_layer, transport_closed) async move {
+            enc!((id, media_ssrc, track_local, rtp_sender, replaced_sender, publisher_rtcp_sender, publisher_receiver, rtcp_sender, rtp_lock, sequence, timestamp, spatial_layer, temporal_layer, transport_closed) async move {
                 Self::rtp_event_loop(
                     id,
                     media_ssrc,
@@ -80,6 +82,8 @@ impl Subscriber {
                     rtp_sender,
                     replaced_sender,
                     publisher_rtcp_sender,
+                    publisher_receiver,
+                    rtcp_sender,
                     rtp_lock,
                     sequence,
                     timestamp,
@@ -115,6 +119,7 @@ impl Subscriber {
             subscriber_event_sender: event_sender.clone(),
             track_local,
             publisher_rtcp_sender,
+            publisher_receiver,
             rtcp_sender,
             sequence,
             timestamp,
@@ -229,6 +234,8 @@ impl Subscriber {
             let spatial_layer = self.spatial_layer.clone();
             let temporal_layer = self.temporal_layer.clone();
             let transport_closed = self.transport_closed.clone();
+            let publisher_receiver = self.publisher_receiver.clone();
+            let subscriber_sender = self.rtcp_sender.clone();
             tokio::spawn(async move {
                 Self::rtp_event_loop(
                     id,
@@ -237,6 +244,8 @@ impl Subscriber {
                     rtp_sender,
                     replaced_sender,
                     publisher_rtcp_sender,
+                    publisher_receiver,
+                    subscriber_sender,
                     rtp_lock,
                     sequence,
                     timestamp,
@@ -285,6 +294,8 @@ impl Subscriber {
         rtp_sender: broadcast::Sender<(rtp::packet::Packet, Layer)>,
         replaced_sender: broadcast::Sender<bool>,
         publisher_rtcp_sender: Arc<transport::RtcpSender>,
+        publisher_receiver: Option<Arc<RTCRtpReceiver>>,
+        subscriber_sender: Arc<RTCRtpSender>,
         loop_lock: Arc<Mutex<bool>>,
         init_sequence: Arc<AtomicU16>,
         init_timestamp: Arc<AtomicU32>,
@@ -297,6 +308,9 @@ impl Subscriber {
         let mut rtp_receiver = rtp_sender.subscribe();
         drop(rtp_sender);
         let mut track_replaced = replaced_sender.subscribe();
+        // Resolved lazily: subscribe_track runs before the answer, so the
+        // subscriber has not negotiated its extension ids yet at this point.
+        let mut translator: Option<ExtensionTranslator> = None;
 
         tracing::debug!(
             "Subscriber id={} publisher_ssrc={} RTP event loop has started",
@@ -327,6 +341,33 @@ impl Subscriber {
                     }
                     match res {
                         Ok((mut packet, layer)) => {
+                            if translator.is_none() {
+                                match &publisher_receiver {
+                                    Some(receiver) => {
+                                        let subscriber_extensions = subscriber_sender
+                                            .get_parameters()
+                                            .await
+                                            .rtp_parameters
+                                            .header_extensions;
+                                        // Empty means negotiation has not landed
+                                        // yet; retry on the next packet rather
+                                        // than caching an empty mapping.
+                                        if !subscriber_extensions.is_empty() {
+                                            let publisher_extensions =
+                                                receiver.get_parameters().await.header_extensions;
+                                            translator = Some(ExtensionTranslator::new(
+                                                &publisher_extensions,
+                                                &subscriber_extensions,
+                                            ));
+                                        }
+                                    }
+                                    None => translator = Some(ExtensionTranslator::passthrough()),
+                                }
+                            }
+                            if let Some(translator) = &translator {
+                                translator.translate(&mut packet.header);
+                            }
+
                             let tid = temporal_layer.load(Ordering::Relaxed);
                             let sid = spatial_layer.load(Ordering::Relaxed);
 

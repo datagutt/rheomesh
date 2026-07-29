@@ -25,7 +25,7 @@ pub struct LocalTrack {
     ssrc: u32,
     rid: String,
     track: Arc<TrackRemote>,
-    _rtp_receiver: Arc<RTCRtpReceiver>,
+    rtp_receiver: Arc<RTCRtpReceiver>,
     _rtp_transceiver: Arc<RTCRtpTransceiver>,
     rtcp_sender: Arc<transport::RtcpSender>,
     closed_sender: broadcast::Sender<bool>,
@@ -72,7 +72,7 @@ impl LocalTrack {
             ssrc,
             rid,
             track,
-            _rtp_receiver: rtp_receiver,
+            rtp_receiver,
             _rtp_transceiver: rtp_transceiver,
             rtcp_sender,
             closed_sender: tx,
@@ -245,6 +245,10 @@ impl LocalTrack {
 impl Track for LocalTrack {
     fn rtcp_sender(&self) -> Arc<transport::RtcpSender> {
         self.rtcp_sender.clone()
+    }
+
+    fn rtp_receiver(&self) -> Option<Arc<RTCRtpReceiver>> {
+        Some(self.rtp_receiver.clone())
     }
 
     fn rtp_packet_sender(&self) -> broadcast::Sender<(rtp::packet::Packet, Layer)> {
