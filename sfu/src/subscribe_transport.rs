@@ -511,10 +511,21 @@ impl SubscribeTransport {
             }
             media.remove_attribute(SdpAttributeType::Extmap);
             for attr in found_attr {
-                if let Some(order) = find_extmap_order(&attr.url) {
-                    let mut new_attr = attr.clone();
-                    new_attr.id = order;
-                    let _ = media.add_attribute(SdpAttribute::Extmap(new_attr))?;
+                // Keep the id the *offer* bound this extension to. Rewriting it
+                // to a canonical order produces an answer that rebinds an id the
+                // offerer already assigned to something else, which browsers
+                // reject outright rather than tolerate:
+                //
+                //   RTP extension ID reassignment not supported (collision on
+                //   active MID 0, id=3, old_uri="urn:3gpp:video-orientation",
+                //   new_uri="...transport-wide-cc-extensions-01")
+                //
+                // An answer may only accept or omit what the offer proposed; it
+                // may not renumber it. Unknown extensions are still dropped by
+                // the filter below, which is the part that was actually doing
+                // useful work here.
+                if find_extmap_order(&attr.url).is_some() {
+                    let _ = media.add_attribute(SdpAttribute::Extmap(attr))?;
                 };
             }
         }
