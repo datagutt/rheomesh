@@ -205,7 +205,16 @@ impl PublishTransport {
         }
 
         let answer = self.peer_connection.create_answer(None).await?;
+        // Wait for ICE gathering before reading the local description back, the
+        // same way `SubscribeTransport::get_answer` already does. Without this
+        // the answer is serialised mid-gathering and goes out with `m=video 0`,
+        // `c=IN IP4 0.0.0.0` and no `a=candidate` lines. A publisher receiving
+        // that has nowhere to send media and stalls forever with no candidate
+        // pairs. It matters most for WHIP, which returns this SDP straight to
+        // the wire and has no channel to deliver server candidates afterwards.
+        let mut gathering_complete = self.peer_connection.gathering_complete_promise().await;
         self.peer_connection.set_local_description(answer).await?;
+        let _ = gathering_complete.recv().await;
         match self.peer_connection.local_description().await {
             Some(answer) => Ok(answer),
             None => Err(Error::new_transport(
