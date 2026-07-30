@@ -432,22 +432,43 @@ impl SubscribeTransport {
                         signaling_pending.store(true, Ordering::Relaxed);
                         match pc.create_offer(Some(offer_options)).await {
                             Ok(offer) => {
-                                let offer = Self::adjust_extmap(offer).expect("could not adjust sdp");
-
+                                // set_local_description must be handed exactly what
+                                // create_offer produced: webrtc-rs compares them and
+                                // rejects a rewritten sdp with "new sdp does not match
+                                // previous offer". Adjusting the extmap first therefore
+                                // failed every renegotiation, and the early return left
+                                // the subscriber with no media: a peer connection that
+                                // reaches Connected and shows black. The extmap is
+                                // adjusted on the way out instead, which is what the three
+                                // other call sites in this file already do.
                                 let mut gathering_complete = pc.gathering_complete_promise().await;
                                 if let Err(err) = pc.set_local_description(offer).await {
                                     tracing::error!("Failed to set local description: {}", err);
+                                    signaling_pending.store(false, Ordering::Relaxed);
                                     return;
                                 }
                                 let _ = gathering_complete.recv().await;
 
-                                let offer = pc.local_description().await.unwrap();
+                                let Some(offer) = pc.local_description().await else {
+                                    tracing::error!("No local description after setting one");
+                                    signaling_pending.store(false, Ordering::Relaxed);
+                                    return;
+                                };
+                                let offer = match Self::adjust_extmap(offer) {
+                                    Ok(offer) => offer,
+                                    Err(err) => {
+                                        tracing::error!("Could not adjust extmap: {}", err);
+                                        signaling_pending.store(false, Ordering::Relaxed);
+                                        return;
+                                    }
+                                };
 
                                 tracing::info!("peer sending offer");
                                 (locked)(offer);
                             }
                             Err(err) => {
                                 tracing::error!("Could not create offer: {}", err);
+                                signaling_pending.store(false, Ordering::Relaxed);
                                 return;
                             }
                         }
